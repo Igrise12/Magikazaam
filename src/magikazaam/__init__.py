@@ -1,2 +1,4 @@
 def main() -> None:
-    print("Hello from magikazaam!")
+    from magikazaam.cli import main as run
+
+    run()

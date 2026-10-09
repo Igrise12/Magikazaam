@@ -2,7 +2,7 @@
 
 ## Status
 
-This describes the intended MVP architecture from [the client brief](client-brief.md). The repository is currently a Python starter scaffold; the React client, API, playlist importer, audio pipeline, and SQLite catalog are not implemented yet. This is a target design, not a description of running services.
+This describes the intended MVP architecture from [the client brief](client-brief.md). Task 1 implements the React client, Python API, and shared playlist preparation importer; task 2 implements the shared fingerprint pipeline and profile compatibility helper. See [the README](../README.md) for the current interfaces, commands, limits, and staging behavior. Task 3 implements the SQLite catalog, atomic indexing, persisted profile checks, duplicate skipping, and the client catalog view. Task 4 implements temporary microphone capture, bounded upload validation, offset matching, and fixture-calibrated match/no-match decisions. Real microphone evaluation remains task 6. The diagrams below describe the MVP design.
 
 ## Design goals
 
@@ -73,11 +73,13 @@ Store catalog audio as SQLite BLOBs with its metadata and compact fingerprint po
 
 | Table | Purpose | Core fields |
 |---|---|---|
-| `tracks` | One row per indexed catalog track | `id`, `title`, `artist_or_channel`, `source_url`, `audio_blob` |
-| `fingerprints` | Inverted hash postings for lookup | `hash`, `track_id`, `anchor_frame` |
-| `catalog_meta` | Fingerprint compatibility state | algorithm/config version and parameters |
+| `tracks` | One row per indexed catalog track | `video_id` (primary key), `title`, `channel`, `source_url`, `audio_blob`, `audio_format` |
+| `fingerprints` | Inverted hash postings for lookup | `hash_key`, `track_id`, `anchor_frame` |
+| `catalog_meta` | Fingerprint compatibility state | singleton `id`, serialized `profile` |
 
-Add a non-unique index on `fingerprints.hash` so a hash lookup returns every matching `(track_id, anchor_frame)` posting. The same hash can legitimately occur more than once in one or more tracks. `fingerprints.track_id` references `tracks.id`; deleting a track's catalog entry must remove its postings and associated source audio.
+Add a non-unique index on `fingerprints.hash_key` so a hash lookup returns every matching `(track_id, anchor_frame)` posting. The same hash can legitimately occur more than once in one or more tracks. `fingerprints.track_id` references `tracks.video_id`; deleting a track's catalog entry must remove its postings and associated source audio.
+
+Task 3 uses `data/catalog.sqlite3`, Python’s built-in SQLite driver, and `(anchor_bin << 16) | (target_bin << 6) | delta_frames` to pack keys. Imports accumulate tracks and skip existing video IDs before downloading. New downloads are temporary; original source audio is retained only in SQLite. The catalog list returns metadata and checks compatibility; job status remains in memory. Profile mismatches preserve the database and block use until a rebuild, whose command remains deferred.
 
 Write one track, its audio BLOB, metadata, and all fingerprint rows in a transaction. If validation, decoding, fingerprint generation, or the database write fails, roll back the track and postings. The catalog audio is retained for re-indexing when the fingerprint configuration changes; it is distinct from microphone query audio.
 
@@ -110,6 +112,8 @@ The API needs three logical operations:
 - **Identify:** accepts one short audio sample; returns either a matched track's available metadata or a no-match result.
 
 No listening history or query audio is persisted. A no-match response is a normal recognition outcome, distinct from an API or processing error.
+
+Task 4 uses `POST /api/identify` with a raw WebM/Opus or MP4/AAC body (5 MiB maximum, 2–12 decoded seconds). Uploads stream to system temporary storage; decoding and recognition run in a thread. A read-only SQLite connection checks the profile and searches a consistent read snapshot, using parameterized batches of 500 unique query keys. Results contain only existing track metadata or a normal no-match status. Browser recordings, temporary files, and query fingerprints are not persisted. See the README for response shapes and error statuses.
 
 ## Reliability and privacy
 

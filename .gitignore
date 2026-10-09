@@ -11,3 +11,15 @@ wheels/
 
 # Local CodeGraph index
 .codegraph/
+
+# Playlist preparation and frontend output
+data/imports/
+node_modules/
+*.tsbuildinfo
+.pytest_cache/
+
+# Persistent local catalog and SQLite sidecars
+data/catalog.sqlite3*
+
+# Offline labeled audio and local evaluation reports
+data/evaluation/

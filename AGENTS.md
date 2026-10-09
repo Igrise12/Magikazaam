@@ -2,15 +2,16 @@
 
 ## Project Structure & Module Organization
 
-`src/magikazaam/` is the Python package. `pyproject.toml` defines the package and its `magikazaam` command. `docs/` contains the client brief, architecture, recognition algorithm, and project notes. The React frontend, playlist importer, database layer, tests, and static assets are planned work; they are not present yet.
+`src/magikazaam/` contains the CLI, FastAPI app, and shared playlist importer. `frontend/` contains the React/Vite client. `tests/` contains focused Python tests; `docs/` contains the product specifications. Audio preparation writes ignored staging files under `data/imports/`; the fingerprint pipeline and SQLite catalog remain planned work.
 
 ## Build, Test, and Development Commands
 
 - `uv sync` — create the project environment and install declared dependencies.
-- `uv run magikazaam` — run the configured console entry point.
+- `uv run magikazaam` — start the local API on port 8001 with one worker.
+- `uv run magikazaam import-playlist '<url-or-id>'` — prepare authorized playlist audio through the shared importer.
+- `uv run pytest -q` — run backend tests; real decoding checks require FFmpeg/ffprobe.
 - `uv build` — build the Python package.
-
-There is no frontend package manifest, test runner, or lint/format configuration yet. Add the relevant commands to `pyproject.toml` or the frontend manifest when those parts are introduced.
+- In `frontend/`, `npm ci`, `npm run dev`, and `npm run build` install, serve, and type-check/build the client.
 
 ## Coding Style & Naming Conventions
 
@@ -20,7 +21,7 @@ Use four spaces for Python indentation, `snake_case` for modules/functions/varia
 
 ## Testing Guidelines
 
-No tests or test framework exist yet, and no coverage target is set. Add focused tests under `tests/` as behavior is implemented; use `test_*.py` names for Python tests. Prioritize deterministic fingerprint output, catalog transaction behavior, offset matching, and no-match cases. Document the chosen test command when a runner is added.
+Use pytest with `test_*.py` files under `tests/`; mock YouTube network access. No coverage target is set. As recognition is implemented, prioritize deterministic fingerprints, catalog transactions, offset matching, and no-match cases.
 
 ## Commit & Pull Request Guidelines
 
