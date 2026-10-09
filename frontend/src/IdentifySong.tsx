@@ -12,11 +12,19 @@ type Session = {
   recorder?: MediaRecorder;
   stopTimer?: ReturnType<typeof setTimeout>;
   progressTimer?: ReturnType<typeof setInterval>;
+  audioContext?: AudioContext;
+  audioSource?: MediaStreamAudioSourceNode;
+  analyser?: AnalyserNode;
+  animationFrame?: number;
 };
 
 function releaseRecording(session: Session) {
   clearTimeout(session.stopTimer);
   clearInterval(session.progressTimer);
+  if (session.animationFrame !== undefined) cancelAnimationFrame(session.animationFrame);
+  session.audioSource?.disconnect();
+  session.analyser?.disconnect();
+  void session.audioContext?.close();
   if (session.recorder) {
     session.recorder.ondataavailable = null;
     session.recorder.onstop = null;
@@ -29,10 +37,15 @@ function releaseRecording(session: Session) {
 
 export default function IdentifySong() {
   const active = useRef<Session | null>(null);
+  const micButton = useRef<HTMLButtonElement>(null);
   const [state, setState] = useState<'idle' | 'permission' | 'recording' | 'processing'>('idle');
   const [seconds, setSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Result | null>(null);
+
+  useEffect(() => {
+    if (state !== 'recording') micButton.current?.style.removeProperty('--audio-scale');
+  }, [state]);
 
   function cancel() {
     if (active.current) {
@@ -98,6 +111,24 @@ export default function IdentifySong() {
         return;
       }
       session.stream = stream;
+      try {
+        const audioContext = new AudioContext();
+        session.audioContext = audioContext;
+        await audioContext.resume();
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.3;
+        source.connect(analyser);
+        session.audioSource = source;
+        session.analyser = analyser;
+      } catch {
+        // Keep recognition working if live audio visualization is unavailable.
+      }
+      if (active.current !== session) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       const recorder = new MediaRecorder(stream, { mimeType });
       session.recorder = recorder;
       let byteCount = 0;
@@ -140,6 +171,21 @@ export default function IdentifySong() {
       recorder.start(1000);
       const started = performance.now();
       setState('recording');
+      if (session.analyser) {
+        const frequencies = new Uint8Array(session.analyser.frequencyBinCount);
+        let level = 0;
+        const animate = () => {
+          if (active.current !== session || !session.analyser) return;
+          session.analyser.getByteFrequencyData(frequencies);
+          let bass = 0;
+          for (let index = 1; index < 8; index++) bass += frequencies[index];
+          const target = Math.max(0, Math.min(1, (bass / 7 - 35) / 120));
+          level += (target - level) * (target > level ? 0.45 : 0.16);
+          micButton.current?.style.setProperty('--audio-scale', String(1 + level * 0.14));
+          session.animationFrame = requestAnimationFrame(animate);
+        };
+        session.animationFrame = requestAnimationFrame(animate);
+      }
       session.progressTimer = setInterval(() => setSeconds(Math.min(10, Math.floor((performance.now() - started) / 1000))), 250);
       session.stopTimer = setTimeout(() => {
         setSeconds(10);
@@ -155,25 +201,39 @@ export default function IdentifySong() {
   }
 
   const busy = state !== 'idle';
+  const buttonLabel = state === 'permission' ? 'Waiting for microphone permission'
+    : state === 'recording' ? 'Listening for a song'
+    : state === 'processing' ? 'Finding a match' : 'Identify song';
+
   return <section className="identify-panel" aria-labelledby="identify-heading" aria-busy={busy}>
-    <h2 id="identify-heading">Identify Song</h2>
-    <p className="muted">Listen to about 10 seconds of music and search your indexed catalog.</p>
-    <button onClick={() => void start()} disabled={busy}>Identify Song</button>
-    {busy && <button className="secondary" onClick={cancel}>Cancel</button>}
-    <div role="status" aria-live="polite">
-      {state === 'permission' && <p>Waiting for microphone permission…</p>}
+    <h1 id="identify-heading">Identify a song</h1>
+    <button ref={micButton} className={`mic-button${state === 'recording' ? ' is-recording' : ''}${busy ? ' is-busy' : ''}`}
+      onClick={() => void start()} disabled={busy} aria-label={buttonLabel}>
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="11" y="3" width="10" height="18" rx="5" />
+        <path d="M7 15v1a9 9 0 0 0 18 0v-1M16 25v4m-5 0h10" />
+      </svg>
+    </button>
+    <div className="identify-status" role="status" aria-live="polite">
+      {state === 'idle' && !result && <p className="identify-hint">Tap to listen</p>}
+      {state === 'permission' && <p className="identify-hint">Allow microphone access</p>}
       {state === 'recording' && <>
-        <p>Recording… {seconds} / 10 seconds</p>
-        <progress value={seconds} max={10} aria-label="Recording progress" />
+        <p className="identify-hint">Listening to nearby music</p>
+        <p className="recording-time">0:{String(seconds).padStart(2, '0')} <span>/ 0:10</span></p>
+        <svg className="sine-wave" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true">
+          <path className="sine-wave-track" d="M0 20 C10 20 10 5 20 5 S30 35 40 35 50 5 60 5 70 35 80 35 90 5 100 5 110 35 120 35 130 5 140 5 150 35 160 20" />
+          <path className="sine-wave-flow" d="M0 20 C10 20 10 5 20 5 S30 35 40 35 50 5 60 5 70 35 80 35 90 5 100 5 110 35 120 35 130 5 140 5 150 35 160 20" />
+        </svg>
       </>}
-      {state === 'processing' && <p>Searching your catalog…</p>}
-      {result?.status === 'no_match' && <p>No match found</p>}
-      {result?.status === 'match' && <div className="track-info match-result">
+      {state === 'processing' && <p className="identify-hint processing-hint">Finding a match…</p>}
+      {state === 'idle' && result?.status === 'no_match' && <p className="identify-hint result-message">No match found</p>}
+      {state === 'idle' && result?.status === 'match' && <div className="match-result">
         <a href={result.track.source_url} target="_blank" rel="noreferrer">{result.track.title}</a>
         {result.track.channel && <p>{result.track.channel}</p>}
       </div>}
     </div>
-    {error && <p className="error" role="alert">{error}</p>}
-    <p className="muted">Your microphone recording is discarded after processing. No listening history is saved.</p>
+    {busy && <button className="cancel-button" onClick={cancel}>Cancel</button>}
+    {error && <p className="error identify-error" role="alert">{error}</p>}
+    <p className="privacy-note">Audio is discarded after the search.</p>
   </section>;
 }

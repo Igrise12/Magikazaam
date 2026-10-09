@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, request } from './api';
 import IdentifySong from './IdentifySong';
 
@@ -24,8 +24,8 @@ type ImportJob = {
 };
 
 export default function App() {
+  const catalogDialog = useRef<HTMLDialogElement>(null);
   const [playlist, setPlaylist] = useState('');
-  const [connected, setConnected] = useState<boolean | null>(null);
   const [starting, setStarting] = useState(false);
   const [importId, setImportId] = useState<string | null>(null);
   const [job, setJob] = useState<ImportJob | null>(null);
@@ -33,17 +33,8 @@ export default function App() {
   const [pollingFailed, setPollingFailed] = useState(false);
   const [retry, setRetry] = useState(0);
   const [catalog, setCatalog] = useState<CatalogTrack[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogRetry, setCatalogRetry] = useState(0);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    request('/api/health', { signal: controller.signal }).then(() => setConnected(true)).catch(() => {
-      if (!controller.signal.aborted) setConnected(false);
-    });
-    return () => controller.abort();
-  }, []);
 
   useEffect(() => {
     if (!importId) return;
@@ -56,7 +47,6 @@ export default function App() {
         setJob(next);
         setError(null);
         setPollingFailed(false);
-        setConnected(true);
         if (next.state === 'queued' || next.state === 'running') timer = setTimeout(poll, 1000);
       } catch (err) {
         if (controller.signal.aborted) return;
@@ -64,9 +54,8 @@ export default function App() {
           setImportId(null);
           setJob(previous => previous ? { ...previous, state: 'failed', error: err.message } : null);
         } else {
-          setError('Could not refresh import progress. Check the server connection and retry.');
+          setError('Could not refresh import progress. Check the connection and retry.');
           setPollingFailed(true);
-          setConnected(false);
         }
       }
     };
@@ -77,14 +66,11 @@ export default function App() {
   useEffect(() => {
     if (job?.state === 'queued' || job?.state === 'running') return;
     const controller = new AbortController();
-    setCatalogLoading(true);
     setCatalogError(null);
     request<CatalogTrack[]>('/api/catalog', { signal: controller.signal }).then(tracks => {
       if (!controller.signal.aborted) setCatalog(tracks);
     }).catch(err => {
       if (!controller.signal.aborted) setCatalogError(err instanceof ApiError ? err.message : 'Could not load your catalog. Check the connection and retry.');
-    }).finally(() => {
-      if (!controller.signal.aborted) setCatalogLoading(false);
     });
     return () => controller.abort();
   }, [job?.state, catalogRetry]);
@@ -102,10 +88,8 @@ export default function App() {
       setJob({ import_id: response.import_id, playlist, state: 'queued', total: 0, completed: 0, tracks: [], error: null });
       setPollingFailed(false);
       setImportId(response.import_id);
-      setConnected(true);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not reach the server. Check the connection and try again.');
-      if (!(err instanceof ApiError)) setConnected(false);
     } finally {
       setStarting(false);
     }
@@ -117,101 +101,91 @@ export default function App() {
   const failed = job?.tracks.filter(track => track.status === 'failed').length ?? 0;
   const stateText = job?.state === 'completed' ? 'Import finished'
     : job?.state === 'failed' ? 'Import stopped'
-    : job?.total ? `Processed ${job.completed} of ${job.total} tracks`
+    : job?.total ? `Importing ${job.completed} of ${job.total} tracks`
     : 'Reading your playlist…';
 
   return (
-    <main>
+    <main className="app-shell">
       <header className="masthead">
         <a className="brand" href="/" aria-label="Magikazaam home">
-          <svg viewBox="0 0 40 40" width="36" height="36" aria-hidden="true">
+          <svg viewBox="0 0 40 40" width="30" height="30" aria-hidden="true">
             <circle cx="20" cy="20" r="18" fill="currentColor" />
             <path d="M12 22v-4m5 10V12m6 12v-8m5 6v-4" stroke="white" strokeWidth="3" strokeLinecap="round" />
           </svg>
-          Magikazaam
+          <span>Magikazaam</span>
         </a>
-        <span className={`connection ${connected === false ? 'offline' : ''}`}>
-          <span className="connection-dot" />
-          {connected === null ? 'Connecting…' : connected ? 'Server connected' : 'Server unavailable'}
-        </span>
       </header>
-
-      <section className="intro">
-        <h1>Your playlist.<br />Ready to recognize.</h1>
-        <p>Start with the songs you want Magikazaam to know. Import a YouTube playlist to build your music catalog.</p>
-      </section>
 
       <IdentifySong />
 
-      <section className="import-panel" aria-labelledby="import-heading">
-        <div className="form-side">
+      <section className="import-section" aria-labelledby="import-heading">
+        <div className="section-heading">
           <h2 id="import-heading">Import a playlist</h2>
-          <p>Use a public or unlisted playlist containing audio you’re authorized to download.</p>
-          <form onSubmit={startImport}>
-            <label htmlFor="playlist">YouTube playlist URL or ID</label>
-            <input id="playlist" name="playlist" value={playlist} onChange={event => setPlaylist(event.target.value)}
-              placeholder="https://www.youtube.com/playlist?list=…" required maxLength={2048}
-              disabled={busy} aria-describedby="playlist-limits" />
-            <button type="submit" disabled={busy || !playlist.trim()}>{busy ? 'Importing playlist…' : 'Import playlist'}</button>
-          </form>
-          <p id="playlist-limits" className="limits">Up to 100 tracks. Each track: 15 minutes and 50 MiB maximum.</p>
-          {error && <div className="error" role="alert">{error}</div>}
-          {pollingFailed && <button className="secondary" onClick={() => setRetry(value => value + 1)}>Retry progress</button>}
+          {catalogError ? <span className="catalog-count">Catalog unavailable</span>
+            : <button className="catalog-trigger" type="button" aria-label={`View ${catalog.length} indexed ${catalog.length === 1 ? 'track' : 'tracks'}`}
+              onClick={() => catalogDialog.current?.showModal()}>
+              {catalog.length} {catalog.length === 1 ? 'track' : 'tracks'}
+            </button>}
         </div>
-        <aside className="note-side">
-          <h3>A catalog of your own</h3>
-          <p>Each available track is downloaded and checked. If a track can’t be indexed, you’ll see the reason below.</p>
-          <p>Audio and fingerprints are saved in your catalog. Tracks already indexed are skipped.</p>
-        </aside>
+
+        <form className="import-form" onSubmit={startImport}>
+          <label className="sr-only" htmlFor="playlist">YouTube playlist URL or ID</label>
+          <input id="playlist" name="playlist" value={playlist} onChange={event => setPlaylist(event.target.value)}
+            placeholder="Paste a YouTube playlist URL" required maxLength={2048} disabled={busy}
+            aria-describedby="authorization-note" />
+          <button className="import-button" type="submit" disabled={busy || !playlist.trim()}>
+            {busy ? 'Importing…' : 'Import'}
+          </button>
+        </form>
+        <p className="authorization-note" id="authorization-note">Only import audio you’re authorized to use.</p>
+
+        {error && <p className="error" role="alert">{error}</p>}
+        {pollingFailed && <button className="text-button" onClick={() => setRetry(value => value + 1)}>Retry progress</button>}
+        {catalogError && <button className="text-button" onClick={() => setCatalogRetry(value => value + 1)}>Retry catalog</button>}
+
+        {job && <div className="import-status">
+          <div className="import-summary" role="status" aria-live="polite">
+            <span>{stateText}</span>
+            <span className="import-counts">
+              {indexed} indexed <span aria-hidden="true">·</span> {skipped} skipped <span aria-hidden="true">·</span> {failed} failed
+            </span>
+          </div>
+          {busy && <progress max={job.total || 1} value={job.total ? job.completed : undefined} aria-label="Playlist import progress" />}
+          {job.error && <p className="error" role="alert">{job.error}</p>}
+          {job.tracks.length > 0 && <details className="track-details">
+            <summary>View {job.tracks.length} tracks</summary>
+            <ol className="track-list">
+              {job.tracks.map((track, index) => <li key={`${track.video_id ?? 'unavailable'}-${index}`}>
+                <div className="track-info">
+                  {track.source_url ? <a href={track.source_url} target="_blank" rel="noreferrer">{track.title}</a> : <strong>{track.title}</strong>}
+                  {track.channel && <span>{track.channel}</span>}
+                  {track.error && <span className="track-error">{track.error}</span>}
+                </div>
+                <span className={`track-state ${track.status}`}>{track.status === 'indexed' ? 'Indexed' : track.status === 'skipped' ? 'Skipped' : 'Failed'}</span>
+              </li>)}
+            </ol>
+          </details>}
+        </div>}
       </section>
 
-      <section className="results" aria-labelledby="results-heading">
-        <div className="results-heading">
-          <h2 id="results-heading">Import results</h2>
-          {job && <span>{indexed} indexed / {skipped} skipped / {failed} failed</span>}
-        </div>
-        {!job ? <p className="empty">Your tracks will appear here when you import a playlist.</p> : <>
-          <div className="progress-area" role="status" aria-live="polite">
-            <p>{stateText}</p>
-            {busy && <progress max={job.total || 100} value={job.total ? job.completed : undefined} aria-label="Playlist import progress" />}
-            {job.state === 'completed' && <p className="muted">{indexed + skipped ? 'Your indexed tracks are saved in the catalog below. Microphone identification comes next.' : 'No tracks were indexed. Check the errors below before trying again.'}</p>}
+      <dialog ref={catalogDialog} className="catalog-dialog" aria-labelledby="catalog-dialog-heading"
+        onClick={event => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
+        <div className="dialog-heading">
+          <div>
+            <h2 id="catalog-dialog-heading">Your catalog</h2>
+            <p>{catalog.length} indexed {catalog.length === 1 ? 'track' : 'tracks'}</p>
           </div>
-          {job.error && <p className="error" role="alert">{job.error}</p>}
-          <ol className="track-list">
-            {job.tracks.map((track, index) => <li key={`${track.video_id ?? 'unavailable'}-${index}`}>
-              <span className="track-number">{String(index + 1).padStart(2, '0')}</span>
-              <div className="track-info">
-                {track.source_url ? <a href={track.source_url} target="_blank" rel="noreferrer">{track.title}</a> : <strong>{track.title}</strong>}
-                {track.channel && <p>{track.channel}</p>}
-                {track.error && <p className="track-error">{track.error}</p>}
-              </div>
-              <span className={`track-state ${track.status}`}>{track.status === 'indexed' ? 'Indexed' : track.status === 'skipped' ? 'Already indexed' : 'Failed'}</span>
-            </li>)}
-          </ol>
-        </>}
-      </section>
-      <section className="results" aria-labelledby="catalog-heading" aria-busy={catalogLoading}>
-        <div className="results-heading">
-          <h2 id="catalog-heading">Your catalog</h2>
-          <span>{catalog.length} indexed {catalog.length === 1 ? 'track' : 'tracks'}</span>
+          <form method="dialog"><button className="dialog-close" aria-label="Close catalog">×</button></form>
         </div>
-        {catalogLoading && <p className="empty" role="status">Loading your catalog…</p>}
-        {catalogError && <>
-          <p className="error" role="alert">{catalogError}</p>
-          <button className="secondary" onClick={() => setCatalogRetry(value => value + 1)}>Retry catalog</button>
-        </>}
-        {!catalogLoading && !catalogError && catalog.length === 0 && <p className="empty">No indexed tracks yet. Import a playlist to add songs.</p>}
-        {catalog.length > 0 && <ol className="track-list">
-          {catalog.map((track, index) => <li key={track.video_id}>
-            <span className="track-number">{String(index + 1).padStart(2, '0')}</span>
+        {catalog.length ? <ol className="catalog-list">
+          {catalog.map(track => <li key={track.video_id}>
             <div className="track-info">
               {track.source_url ? <a href={track.source_url} target="_blank" rel="noreferrer">{track.title}</a> : <strong>{track.title}</strong>}
-              {track.channel && <p>{track.channel}</p>}
+              {track.channel && <span>{track.channel}</span>}
             </div>
           </li>)}
-        </ol>}
-      </section>
-      <footer>Catalog tracks are saved across restarts. Recognition thresholds use a local fixture baseline; real microphone evaluation is still pending.</footer>
+        </ol> : <p className="catalog-empty">No indexed tracks yet.</p>}
+      </dialog>
     </main>
   );
 }
